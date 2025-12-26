@@ -7,25 +7,26 @@ import re
 app = Flask(__name__)
 CORS(app)
 
-# Browser Headers (To avoid blocking)
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
 }
 
-def clean_text(text):
-    if not text: return None
-    return text.strip().replace(":", "").strip()
+def clean(text):
+    if not text: return "NA"
+    # Remove extra spaces and colons
+    return re.sub(r'[:\-\n\r\t]', '', text).strip()
 
 def get_challan_count(session, rc_number):
     url = f"https://vahanx.in/challan-search/{rc_number}"
     try:
         response = session.get(url, headers=HEADERS, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        text_content = soup.get_text()
-        match = re.search(r"eChallan\s*\((\d+)\)", text_content)
+        text = BeautifulSoup(response.text, 'html.parser').get_text()
+        
+        match = re.search(r"eChallan\s*\((\d+)\)", text)
         if match: return match.group(1)
-        if "No Challan Found" in text_content: return "0"
+        
+        if "No Challan Found" in text: return "0"
         return "0"
     except:
         return "Error"
@@ -33,92 +34,58 @@ def get_challan_count(session, rc_number):
 @app.route('/vehicle-info', methods=['GET'])
 def vehicle_info():
     rc = request.args.get('rc')
-    if not rc:
-        return jsonify({"error": "RC Number Required"}), 400
+    if not rc: return jsonify({"error": "RC Required"}), 400
 
     session = requests.Session()
-    data = {"rc": rc, "status": "Success", "details": {}}
+    final_data = {"rc": rc, "details": {}}
 
     try:
-        # 1. Fetch RC Page
-        rc_url = f"https://vahanx.in/rc-search/{rc}"
-        response = session.get(rc_url, headers=HEADERS, timeout=15)
+        url = f"https://vahanx.in/rc-search/{rc}"
+        response = session.get(url, headers=HEADERS, timeout=15)
         
         if "No Record Found" in response.text:
             return jsonify({"error": "No Record Found"}), 404
-            
+
+        # Convert entire HTML to plain text line by line
         soup = BeautifulSoup(response.text, 'html.parser')
+        full_text = soup.get_text(separator="\n")
         
-        # ======================================================
-        # NEW SMART SCRAPING LOGIC (To find ALL details)
-        # ======================================================
-        
-        # 1. Try finding data in standard Cards (Old Method - Keeps working for basics)
-        cards = soup.find_all(class_='hrcd-cardbody')
-        for card in cards:
-            try:
-                label = card.find('span').text.strip()
-                val = card.find('p').text.strip()
-                data["details"][label] = val
-            except:
-                continue
+        # === POWERFUL REGEX SEARCH ===
+        # Ye patterns text me se value nikalenge chahe wo kahi bhi chupi ho
+        patterns = {
+            "Owner Name": r"(?:Owner Name|Owner's Name)[\s:]+([A-Za-z\s\.]+)",
+            "Father Name": r"(?:Father Name|Father's Name|S/O|W/O|D/O)[\s:]+([A-Za-z\s\.]+)",
+            "Registration Date": r"(?:Registration Date|Reg Date)[\s:]+([\d\-\w]+)",
+            "Model Name": r"(?:Model Name|Maker Model|Model)[\s:]+([A-Za-z0-9\s\.\-\(\)]+)",
+            "Vehicle Class": r"(?:Vehicle Class|Class)[\s:]+([A-Za-z0-9\s\.\-\(\)]+)",
+            "Fuel Type": r"(?:Fuel Type|Fuel)[\s:]+([A-Za-z\s]+)",
+            "Chassis No": r"(?:Chassis No|Chassis)[\s:]+([A-Za-z0-9]+)",
+            "Engine No": r"(?:Engine No|Engine)[\s:]+([A-Za-z0-9]+)",
+            "Fitness Upto": r"(?:Fitness Upto|Fit up to)[\s:]+([\d\-\w]+)",
+            "Insurance Upto": r"(?:Insurance Upto|Insurance Expiry)[\s:]+([\d\-\w]+)",
+            "Tax Upto": r"(?:Tax Upto|MV Tax)[\s:]+([\d\-\w]+|LTT|One Time)",
+            "PUC Upto": r"(?:PUC Upto|Pollution Upto|PUC Valid)[\s:]+([\d\-\w]+)",
+            "Emission Norms": r"(?:Emission Norms|Fuel Norms)[\s:]+([A-Za-z0-9\s]+)",
+            "RTO": r"(?:Registering Authority|RTO)[\s:]+([A-Za-z0-9\s\,\-]+)",
+            "Financier": r"(?:Financier|Hypothecation)[\s:]+([A-Za-z0-9\s\.]+)",
+            "Status": r"(?:Status|Rc Status)[\s:]+([A-Za-z]+)",
+            "Phone": r"(?:Phone|Mobile)[\s:]+(\+91[0-9X*]+)",
+            "Address": r"(?:Address|Permanent Address)[\s:]+([A-Za-z0-9\s\,\-\.]+)"
+        }
 
-        # 2. BRUTE FORCE SEARCH (Ye bache hue data ko dhundega)
-        # Ye list mein wo sab naam hain jo aapko chahiye
-        keywords = [
-            "Father's Name", "Father Name", "Chassis No", "Engine No", 
-            "Vehicle Class", "Fuel Type", "Maker Model", "Manufacturing Date",
-            "Fitness Upto", "Insurance Upto", "Pollution Upto", "MV Tax",
-            "Owner Serial No", "Financier", "PUC No", "Seat Capacity", "Cubic Capacity",
-            "Vehicle Color", "Unladen Weight", "Gross Weight", "Sleeper Capacity"
-        ]
+        for key, pattern in patterns.items():
+            # Multiline mode + Case Insensitive
+            match = re.search(pattern, full_text, re.IGNORECASE | re.MULTILINE)
+            if match:
+                value = clean(match.group(1))
+                # Validation: Value shouldn't be too long (garbage check)
+                if len(value) < 100: 
+                    final_data["details"][key] = value
 
-        # Pure HTML text mein keywords dhundo
-        all_text_elements = soup.find_all(text=True)
-        
-        for keyword in keywords:
-            # Agar purane tarike se ye data nahi mila, tabhi dhundo
-            if keyword not in data["details"]:
-                for element in all_text_elements:
-                    if keyword.lower() in element.lower():
-                        # Keyword mil gaya, ab uske aas-paas ka value dhundo
-                        try:
-                            # Case A: Value agle element mein hai
-                            parent = element.parent
-                            
-                            # Koshish 1: Sibling (Baju wala element)
-                            value_candidate = parent.find_next_sibling()
-                            if value_candidate and value_candidate.name in ['p', 'span', 'div', 'strong']:
-                                text_val = clean_text(value_candidate.text)
-                                if text_val and len(text_val) > 1:
-                                    data["details"][keyword] = text_val
-                                    break
-                            
-                            # Koshish 2: Parent ke text mein hi value chupa ho
-                            # Example: <td>Father: RAM LAL</td>
-                            full_text = parent.text
-                            if ":" in full_text:
-                                parts = full_text.split(":")
-                                if len(parts) > 1:
-                                    text_val = clean_text(parts[1])
-                                    data["details"][keyword] = text_val
-                                    break
+        # Challan Count
+        final_data["details"]["Challan"] = get_challan_count(session, rc)
 
-                        except:
-                            continue
-
-        # 3. Phone Number Fix (Special handling)
-        if "Phone" not in data["details"]:
-             # Try finding masked phone pattern
-             phone_match = re.search(r"\+91[0-9X*]+", soup.get_text())
-             if phone_match:
-                 data["details"]["Phone"] = phone_match.group(0)
-
-        # 4. Challan Count Add karo
-        challan_count = get_challan_count(session, rc)
-        data["details"]["Challan"] = challan_count
-
-        return jsonify(data)
+        return jsonify(final_data)
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
