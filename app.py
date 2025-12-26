@@ -14,8 +14,9 @@ HEADERS = {
 
 def clean(text):
     if not text: return "NA"
-    # Remove extra spaces and colons
-    return re.sub(r'[:\-\n\r\t]', '', text).strip()
+    # Remove colons, dashes and extra spaces
+    cleaned = re.sub(r'[:\-\t]', '', text).strip()
+    return cleaned
 
 def get_challan_count(session, rc_number):
     url = f"https://vahanx.in/challan-search/{rc_number}"
@@ -30,6 +31,11 @@ def get_challan_count(session, rc_number):
         return "0"
     except:
         return "Error"
+
+# Root Route (For Cron Job / Ping)
+@app.route('/')
+def home():
+    return "Server is Running! (Ping Successful)"
 
 @app.route('/vehicle-info', methods=['GET'])
 def vehicle_info():
@@ -46,45 +52,43 @@ def vehicle_info():
         if "No Record Found" in response.text:
             return jsonify({"error": "No Record Found"}), 404
 
-        # Convert entire HTML to plain text line by line
+        # Convert HTML to text with explicit newlines
         soup = BeautifulSoup(response.text, 'html.parser')
         full_text = soup.get_text(separator="\n")
         
-        # === POWERFUL REGEX SEARCH ===
-        # Ye patterns text me se value nikalenge chahe wo kahi bhi chupi ho
+        # === NEW STRICT PATTERNS (Stops at newline) ===
+        # [^\n]+ ka matlab hai: New line aane tak sab kuch copy karo
         patterns = {
-            "Owner Name": r"(?:Owner Name|Owner's Name)[\s:]+([A-Za-z\s\.]+)",
-            "Father Name": r"(?:Father Name|Father's Name|S/O|W/O|D/O)[\s:]+([A-Za-z\s\.]+)",
-            "Registration Date": r"(?:Registration Date|Reg Date)[\s:]+([\d\-\w]+)",
-            "Model Name": r"(?:Model Name|Maker Model|Model)[\s:]+([A-Za-z0-9\s\.\-\(\)]+)",
-            "Vehicle Class": r"(?:Vehicle Class|Class)[\s:]+([A-Za-z0-9\s\.\-\(\)]+)",
-            "Fuel Type": r"(?:Fuel Type|Fuel)[\s:]+([A-Za-z\s]+)",
-            "Chassis No": r"(?:Chassis No|Chassis)[\s:]+([A-Za-z0-9]+)",
-            "Engine No": r"(?:Engine No|Engine)[\s:]+([A-Za-z0-9]+)",
-            "Fitness Upto": r"(?:Fitness Upto|Fit up to)[\s:]+([\d\-\w]+)",
-            "Insurance Upto": r"(?:Insurance Upto|Insurance Expiry)[\s:]+([\d\-\w]+)",
-            "Tax Upto": r"(?:Tax Upto|MV Tax)[\s:]+([\d\-\w]+|LTT|One Time)",
-            "PUC Upto": r"(?:PUC Upto|Pollution Upto|PUC Valid)[\s:]+([\d\-\w]+)",
-            "Emission Norms": r"(?:Emission Norms|Fuel Norms)[\s:]+([A-Za-z0-9\s]+)",
-            "RTO": r"(?:Registering Authority|RTO)[\s:]+([A-Za-z0-9\s\,\-]+)",
-            "Financier": r"(?:Financier|Hypothecation)[\s:]+([A-Za-z0-9\s\.]+)",
-            "Status": r"(?:Status|Rc Status)[\s:]+([A-Za-z]+)",
+            "Owner Name": r"(?:Owner Name|Owner's Name)[\s:]+([^\n]+)",
+            "Father Name": r"(?:Father Name|Father's Name|S/O|W/O|D/O)[\s:]+([^\n]+)",
+            "Registration Date": r"(?:Registration Date|Reg Date)[\s:]+([^\n]+)",
+            "Model Name": r"(?:Model Name|Maker Model|Model)[\s:]+([^\n]+)",
+            "Vehicle Class": r"(?:Vehicle Class|Class)[\s:]+([^\n]+)",
+            "Fuel Type": r"(?:Fuel Type|Fuel)[\s:]+([^\n]+)",
+            "Chassis No": r"(?:Chassis No|Chassis)[\s:]+([^\n]+)",
+            "Engine No": r"(?:Engine No|Engine)[\s:]+([^\n]+)",
+            "Fitness Upto": r"(?:Fitness Upto|Fit up to)[\s:]+([^\n]+)",
+            "Insurance Upto": r"(?:Insurance Upto|Insurance Expiry)[\s:]+([^\n]+)",
+            "Tax Upto": r"(?:Tax Upto|MV Tax)[\s:]+([^\n]+)",
+            "PUC Upto": r"(?:PUC Upto|Pollution Upto|PUC Valid)[\s:]+([^\n]+)",
+            "Emission Norms": r"(?:Emission Norms|Fuel Norms)[\s:]+([^\n]+)",
+            "RTO": r"(?:Registering Authority|RTO)[\s:]+([^\n]+)",
+            "Financier": r"(?:Financier|Hypothecation)[\s:]+([^\n]+)",
+            "Status": r"(?:Status|Rc Status)[\s:]+([^\n]+)",
             "Phone": r"(?:Phone|Mobile)[\s:]+(\+91[0-9X*]+)",
-            "Address": r"(?:Address|Permanent Address)[\s:]+([A-Za-z0-9\s\,\-\.]+)"
+            "Address": r"(?:Address|Permanent Address)[\s:]+([^\n]+)"
         }
 
         for key, pattern in patterns.items():
-            # Multiline mode + Case Insensitive
-            match = re.search(pattern, full_text, re.IGNORECASE | re.MULTILINE)
+            # Use strict matching
+            match = re.search(pattern, full_text, re.IGNORECASE)
             if match:
                 value = clean(match.group(1))
-                # Validation: Value shouldn't be too long (garbage check)
-                if len(value) < 100: 
+                # Extra check: Agar value me abhi bhi garbage hai (too long), to reject karo
+                if len(value) < 60 and "Serial" not in value and "Registration" not in value:
                     final_data["details"][key] = value
 
-        # Challan Count
         final_data["details"]["Challan"] = get_challan_count(session, rc)
-
         return jsonify(final_data)
 
     except Exception as e:
